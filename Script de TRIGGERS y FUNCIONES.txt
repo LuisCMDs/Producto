@@ -1,0 +1,582 @@
+Script de TRIGGERS y FUNCIONES
+
+-- ============================================================
+--                        TRIGGERS
+-- ============================================================
+ 
+-- ===========================================================
+--	       tablas  para los triggers
+-- ============================================================
+ 
+## guardo la agenda de actuaciones por abogado
+CREATE TABLE IF NOT EXISTS AgendaAbogados (
+   ID INT PRIMARY KEY AUTO_INCREMENT,
+   ID_abogado INT,
+   ID_actuacion INT,
+   Fecha DATETIME,
+   Lugar VARCHAR(30),
+   Descripcion TEXT,
+   Fecha_registro DATETIME,
+   FOREIGN KEY (ID_abogado) REFERENCES abogados(ID),
+   FOREIGN KEY (ID_actuacion) REFERENCES actuaciones(ID)
+);
+ 
+###  llevo el historial de honorarios que se van calculando
+CREATE TABLE IF NOT EXISTS HistorialHonorarios (
+   ID INT PRIMARY KEY AUTO_INCREMENT,
+   ID_factura INT,
+   ID_abogado INT,
+   Horas DECIMAL(5,2),
+   Tarifa DECIMAL(10,2),
+   Honorario_calculado DECIMAL(10,2),
+   Fecha_calculo DATETIME,
+   FOREIGN KEY (ID_factura) REFERENCES facturas(ID),
+   FOREIGN KEY (ID_abogado) REFERENCES abogados(ID)
+);
+ 
+## registro los conflictos de interés que se detecten
+CREATE TABLE IF NOT EXISTS ConflictosInteres (
+   ID INT PRIMARY KEY AUTO_INCREMENT,
+   ID_caso INT,
+   ID_abogado INT,
+   Descripcion_conflicto TEXT,
+   Fecha_deteccion DATETIME,
+   FOREIGN KEY (ID_caso) REFERENCES casos(ID),
+   FOREIGN KEY (ID_abogado) REFERENCES abogados(ID)
+);
+ 
+## aquí acumulo las estadísticas de casos por abogado y tipo
+CREATE TABLE IF NOT EXISTS EstadisticasCasos (
+   ID INT PRIMARY KEY AUTO_INCREMENT,
+   ID_abogado INT,
+   ID_tipo_caso INT,
+   Total_casos INT DEFAULT 0,
+   Casos_ganados INT DEFAULT 0,
+   Casos_perdidos INT DEFAULT 0,
+   Ultima_actualizacion DATETIME,
+   FOREIGN KEY (ID_abogado) REFERENCES abogados(ID),
+   FOREIGN KEY (ID_tipo_caso) REFERENCES tipos_caso(ID)
+);
+ 
+## aquí guardo el historial de todas las actividades de cada caso
+CREATE TABLE IF NOT EXISTS HistorialActividades (
+   ID INT PRIMARY KEY AUTO_INCREMENT,
+   ID_caso INT,
+   Tipo_actividad VARCHAR(50),
+   Descripcion TEXT,
+   Usuario VARCHAR(50),
+   Fecha_registro DATETIME,
+   FOREIGN KEY (ID_caso) REFERENCES casos(ID)
+);
+ 
+ 
+-- ============================================================
+-- 		1. TR_ActualizarAgendaAbogados
+-- ============================================================
+ 
+DELIMITER $$
+ 
+CREATE TRIGGER TR_ActualizarAgendaAbogados
+AFTER INSERT ON actuaciones
+FOR EACH ROW
+BEGIN
+ 
+   ## busco el abogado principal del caso e inserto la actuación en su agenda
+   INSERT INTO AgendaAbogados (ID_abogado, ID_actuacion, Fecha, Lugar, Descripcion, Fecha_registro)
+   SELECT
+      c.ID_abogado_principal,
+      NEW.ID,
+      NEW.Fecha,
+      NEW.Lugar,
+      NEW.Descripcion,
+      NOW()
+   FROM casos c
+   WHERE c.ID = NEW.ID_caso;
+ 
+END$$
+ 
+DELIMITER ;
+ 
+ 
+## inserto una actuación para probar el trigger
+INSERT INTO actuaciones (ID_caso, ID_tipo_actuacion, Fecha, Lugar, Descripcion, Siguiente_paso, Fecha_limite)
+VALUES (2, 1, '2025-07-15 09:00:00', 'Juzgado Laboral', 'Audiencia de alegatos finales', 'Preparar cierre del caso', '2025-07-20');
+ 
+## verifico que la agenda se actualizó
+SELECT * FROM AgendaAbogados ORDER BY Fecha_registro DESC;
+ 
+ 
+-- ============================================================
+--			 2. TR_CalcularHonorariosAbogados
+-- ============================================================
+ 
+DELIMITER $$
+ 
+CREATE TRIGGER TR_CalcularHonorariosAbogados
+AFTER INSERT ON factura_detalle
+FOR EACH ROW
+BEGIN
+   DECLARE v_honorario DECIMAL(10,2);
+ 
+   ## multiplicar las horas por la tarifa para obtener el honorario
+   SET v_honorario = NEW.Horas * NEW.Tarifa;
+ 
+   ## inserto el resultado en el historial de honorarios
+   INSERT INTO HistorialHonorarios (ID_factura, ID_abogado, Horas, Tarifa, Honorario_calculado, Fecha_calculo)
+   VALUES (NEW.ID_factura, NEW.ID_abogado, NEW.Horas, NEW.Tarifa, v_honorario, NOW());
+ 
+END$$
+ 
+DELIMITER ;
+ 
+## inserto una factura y su detalle para probar el trigger
+INSERT INTO facturas (Fecha, ID_cliente, Gastos_reembolsables, Periodo, Subtotal, Impuestos, Total, ID_estado)
+VALUES (CURDATE(), 1, 0, 'Mayo 2025', 900.00, 171.00, 1071.00, 1);
+ 
+INSERT INTO factura_detalle (ID_factura, ID_abogado, Descripcion, Horas, Tarifa)
+VALUES (LAST_INSERT_ID(), 1, 'Representación caso penal', 4.5, 200.00);
+ 
+## verifico que el honorario se calculó y guardó
+SELECT * FROM HistorialHonorarios ORDER BY Fecha_calculo DESC;
+ 
+ 
+-- ============================================================
+--		 3. TR_VerificarConflictosIntereses
+-- ============================================================
+ 
+DROP TRIGGER TR_VerificarConflictosIntereses
+DELIMITER $$
+ 
+CREATE TRIGGER TR_VerificarConflictosIntereses
+AFTER INSERT ON caso_abogado
+FOR EACH ROW
+BEGIN
+   DECLARE v_contraparte VARCHAR(50);
+   DECLARE v_conflicto TEXT;
+ 
+   ## obtengo la contraparte del caso que acabo de asignar
+   SELECT Contraparte INTO v_contraparte
+   FROM casos
+   WHERE ID = NEW.ID_caso;
+ 
+   ### reviso si el abogado ya tiene un caso activo con esa misma contraparte
+   IF EXISTS (
+      SELECT 1
+      FROM caso_abogado ca
+      INNER JOIN casos c ON ca.ID_caso = c.ID
+      INNER JOIN estados_caso ec ON c.ID_estado = ec.ID
+      WHERE ca.ID_abogado = NEW.ID_abogado
+      AND c.ID_cliente IN (
+      SELECT ID FROM clientes WHERE Nombre = v_contraparte
+      )
+      AND ec.Estado = 'Activo'
+      AND ca.ID_caso != NEW.ID_caso
+    ) THEN
+      ## si aca encuentro conflicto, armo el mensaje y lo inserto en la tabla
+      SET v_conflicto = CONCAT('El abogado ya representa a la contraparte: ', IFNULL(v_contraparte, 'desconocida'), ' en otro caso activo.');
+ 
+   INSERT INTO ConflictosInteres (ID_caso, ID_abogado, Descripcion_conflicto, Fecha_deteccion)
+   VALUES (NEW.ID_caso, NEW.ID_abogado, v_conflicto, NOW());
+   END IF;
+ 
+END$$
+ 
+DELIMITER ;
+ 
+## asigno un abogado a un caso para probar el trigger
+INSERT INTO caso_abogado (ID_caso, ID_abogado, Rol)
+VALUES (2, 1, 'Secundario');
+ 
+## reviso si se registró algún conflicto
+SELECT * FROM ConflictosInteres ORDER BY Fecha_deteccion DESC;
+ 
+ 
+-- ============================================================
+-- 			4. TR_ActualizarEstadisticasCasos
+-- ============================================================
+ 
+DELIMITER $$
+ 
+CREATE TRIGGER TR_ActualizarEstadisticasCasos
+AFTER UPDATE ON casos
+FOR EACH ROW
+BEGIN
+   DECLARE v_estado_nuevo VARCHAR(20);
+   DECLARE v_estado_viejo VARCHAR(20);
+ 
+   ## aca para obtner el nombre del estado anterior y el nuevo
+   SELECT Estado INTO v_estado_nuevo FROM estados_caso WHERE ID = NEW.ID_estado;
+   SELECT Estado INTO v_estado_viejo FROM estados_caso WHERE ID = OLD.ID_estado;
+ 
+   ## solo actualizo si el estado realmente cambió
+   IF v_estado_nuevo != v_estado_viejo THEN
+ 
+   ## inserto o actualizo las estadísticas del abogado y tipo de caso
+   INSERT INTO EstadisticasCasos (ID_abogado, ID_tipo_caso, Total_casos, Casos_ganados, Casos_perdidos, Ultima_actualizacion)
+   VALUES (
+   NEW.ID_abogado_principal,
+   NEW.ID_tipo_caso,
+   1,
+   IF(v_estado_nuevo = 'Ganado', 1, 0),
+   IF(v_estado_nuevo = 'Perdido', 1, 0),
+   NOW()
+   )
+   ON DUPLICATE KEY UPDATE
+   Total_casos = Total_casos + 1,
+   Casos_ganados = Casos_ganados + IF(v_estado_nuevo = 'Ganado', 1, 0),
+   Casos_perdidos = Casos_perdidos + IF(v_estado_nuevo = 'Perdido', 1, 0),
+   Ultima_actualizacion = NOW();
+ 
+   END IF;
+ 
+END$$
+DELIMITER ;
+ DROP TRIGGER TR_ActualizarEstadisticasCasos
+## cambio el estado de un caso para probar el trigger
+UPDATE casos SET ID_estado = 4 WHERE ID = 2; -- lo pongo como Ganado
+ 
+##verifico que las estadísticas se actualizaron
+SELECT * FROM EstadisticasCasos ORDER BY Ultima_actualizacion DESC;
+ 
+ 
+-- ============================================================
+--			 5. TR_RegistrarHistorialActividades
+-- ============================================================
+ 
+DELIMITER $$
+ 
+## este dispara cuando inserto una actuación
+CREATE TRIGGER TR_RegistrarHistorialActuacion
+AFTER INSERT ON actuaciones
+FOR EACH ROW
+BEGIN
+ 
+   ## armo la descripción y la inserto en el historial
+   INSERT INTO HistorialActividades (ID_caso, Tipo_actividad, Descripcion, Usuario, Fecha_registro)
+   VALUES (
+   NEW.ID_caso,
+   'Actuación procesal',
+   CONCAT('Nueva actuación: ', IFNULL(NEW.Descripcion, 'sin descripción'), ' — Lugar: ', IFNULL(NEW.Lugar, 'sin lugar')),
+   USER(),
+   NOW()
+   );
+ 
+END$$
+ 
+## este dispara cuando inserto un documento
+CREATE TRIGGER TR_RegistrarHistorialDocumento
+AFTER INSERT ON documentos
+FOR EACH ROW
+BEGIN
+ 
+   ## armo la descripcion con el ttulo y version, y la inserto en el historial
+   INSERT INTO HistorialActividades (ID_caso, Tipo_actividad, Descripcion, Usuario, Fecha_registro)
+   VALUES (
+   NEW.ID_caso,
+   'Documento legal',
+   CONCAT('Nuevo documento: ', NEW.Titulo, ' — Versión: ', IFNULL(NEW.Version_documento, 'sin versión')),
+   USER(),
+   NOW()
+   );
+ 
+END$$
+ 
+DELIMITER ;
+ 
+## inserto una actuacion y un documento para probar los trigger
+INSERT INTO actuaciones (ID_caso, ID_tipo_actuacion, Fecha, Lugar, Descripcion, Siguiente_paso, Fecha_limite)
+VALUES (2, 1, '2025-08-01 10:00:00', 'Juzgado Laboral', 'Audiencia de sentencia', 'Esperar fallo del juez', '2025-08-10');
+ 
+INSERT INTO documentos (ID_tipo_documento, ID_caso, Titulo, Autor, Fecha_creacion, Version_documento, ID_estado, Contenido, Confidencialidad)
+VALUES (4, 2, 'Informe cierre caso', 'Pedro Ramírez', CURDATE(), 'v1.0', 1, 'Informe final del caso de despido injusto', 'Media');
+ 
+## reviso el historial de actividades del caso 2
+SELECT * FROM HistorialActividades WHERE ID_caso = 2 ORDER BY Fecha_registro DESC;
+ 
+ 
+-- ============================================================
+--                       FUNCIONES
+-- ============================================================
+ 
+ 
+-- ============================================================
+--			 1. FN_CalcularHonorariosEstimados
+-- ============================================================
+ 
+DELIMITER $$
+ 
+CREATE FUNCTION FN_CalcularHonorariosEstimados(
+   p_ID_caso INT,
+   p_horas_estimadas DECIMAL(5,2)
+)
+RETURNS DECIMAL(10,2)
+READS SQL DATA
+BEGIN
+   DECLARE v_tarifa DECIMAL(10,2);
+   DECLARE v_honorario DECIMAL(10,2);
+ 
+   ## busco la tarifa del abogado principal del caso
+   SELECT a.Tarifa_hora INTO v_tarifa
+   FROM casos c
+   INNER JOIN abogados a ON c.ID_abogado_principal = a.ID
+   WHERE c.ID = p_ID_caso;
+ 
+   ## multiplico las horas por la tarifa y retorno el resultado
+   SET v_honorario = IFNULL(v_tarifa, 0) * p_horas_estimadas;
+ 
+   RETURN v_honorario;
+END$$
+ 
+DELIMITER ;
+ 
+## estimo los honorarios del caso 2 con 10 horas
+SELECT FN_CalcularHonorariosEstimados(2, 10) AS HonorariosEstimados;
+ 
+## uso la función para ver todos los casos con sus estimados
+SELECT
+c.ID,
+c.Titulo,
+CONCAT(a.Nombres, ' ', a.Apellidos) AS Abogado,
+a.Tarifa_hora,
+FN_CalcularHonorariosEstimados(c.ID, 20) AS Estimado_20h,
+FN_CalcularHonorariosEstimados(c.ID, 40) AS Estimado_40h
+FROM casos c
+INNER JOIN abogados a ON c.ID_abogado_principal = a.ID;
+ 
+ 
+-- ============================================================
+-- 		2. FN_VerificarDisponibilidadAbogado
+-- ============================================================
+ 
+DELIMITER $$
+ 
+CREATE FUNCTION FN_VerificarDisponibilidadAbogado(
+   p_ID_abogado INT,
+   p_fecha DATE
+)
+RETURNS VARCHAR(20)
+READS SQL DATA
+BEGIN
+   DECLARE v_actuaciones INT;
+   DECLARE v_disponibilidad VARCHAR(20);
+ 
+   ## cuento cuantas actuaciones pendientes tiene el abogado en esa fecha
+   SELECT COUNT(*) INTO v_actuaciones
+   FROM actuaciones ac
+   INNER JOIN caso_abogado ca ON ac.ID_caso = ca.ID_caso
+   WHERE ca.ID_abogado = p_ID_abogado
+   AND DATE(ac.Fecha) = p_fecha
+   AND ac.Resultado IS NULL;
+ 
+   ## segn la cantidad de actuaciones, determino el nivel de disponibilidad
+   IF v_actuaciones = 0 THEN
+   	SET v_disponibilidad = 'Disponible';
+   ELSEIF v_actuaciones BETWEEN 1 AND 2 THEN
+      SET v_disponibilidad = 'Parcial';
+   ELSE
+      SET v_disponibilidad = 'No disponible';
+   END IF;
+ 
+   RETURN v_disponibilidad;
+END$$
+ 
+DELIMITER ;
+ 
+## verifico la disponibilidad del abogado 1 para el 15 de julio
+SELECT FN_VerificarDisponibilidadAbogado(1, '2025-07-15') AS Disponibilidad;
+ 
+## reviso la disponibilidad de todos los abogados para esa fecha
+SELECT
+   a.ID,
+   CONCAT(a.Nombres, ' ', a.Apellidos) AS Abogado,
+   e.Especialidad,
+   FN_VerificarDisponibilidadAbogado(a.ID, '2025-07-15') AS Disponibilidad_15Jul
+FROM abogados a
+INNER JOIN especialidades e ON a.ID_especialidad = e.ID;
+ 
+ 
+-- ============================================================
+-- 		3. FN_ObtenerPrecedentesLegalesSimilares
+-- ============================================================
+ 
+DELIMITER $$
+ 
+CREATE FUNCTION FN_ObtenerPrecedentesLegalesSimilares(
+	p_ID_caso INT
+)
+RETURNS INT
+READS SQL DATA
+BEGIN
+   DECLARE v_rama VARCHAR(20);
+   DECLARE v_total INT;
+ 
+   ## obtengo la rama del derecho del caso
+   SELECT rd.Rama_derecho INTO v_rama
+   FROM casos c
+   INNER JOIN ramas_derecho rd ON c.ID_rama_derecho = rd.ID
+   WHERE c.ID = p_ID_caso;
+ 
+   ##cuento los precedentes que mencionan esa rama en su tema, resumen o principios
+   SELECT COUNT(*) INTO v_total
+   FROM precedentes
+   WHERE Tema LIKE CONCAT('%', v_rama, '%')
+   OR Resumen LIKE CONCAT('%', v_rama, '%')
+   OR Principios LIKE CONCAT('%', v_rama, '%');
+ 
+   RETURN IFNULL(v_total, 0);
+END$$
+ 
+DELIMITER ;
+ 
+## precedentes similares para el caso 2
+SELECT FN_ObtenerPrecedentesLegalesSimilares(2) AS Precedentes_similares;
+ 
+## reviso cuántos precedentes similares tiene cada caso
+SELECT
+   c.ID,
+   c.Titulo,
+   rd.Rama_derecho,
+   FN_ObtenerPrecedentesLegalesSimilares(c.ID) AS Precedentes_similares
+FROM casos c
+INNER JOIN ramas_derecho rd ON c.ID_rama_derecho = rd.ID;
+ 
+ 
+-- ============================================================
+-- 		4. FN_CalcularRentabilidadCaso
+-- ============================================================
+ 
+DELIMITER $$
+ 
+CREATE FUNCTION FN_CalcularRentabilidadCaso(
+   p_ID_caso INT
+)
+RETURNS VARCHAR(20)
+READS SQL DATA
+BEGIN
+   DECLARE v_total_facturado DECIMAL(10,2);
+   DECLARE v_horas_trabajadas DECIMAL(8,2);
+   DECLARE v_tarifa DECIMAL(10,2);
+   DECLARE v_costo_horas DECIMAL(10,2);
+   DECLARE v_rentabilidad VARCHAR(20);
+ 
+   ## sumo todo lo facturado en ese caso
+   SELECT COALESCE(SUM(f.Total), 0) INTO v_total_facturado
+   FROM facturas f
+   INNER JOIN factura_caso fc ON f.ID = fc.ID_factura
+   WHERE fc.ID_caso = p_ID_caso;
+ 
+   ## obtengo el total de horas y el promedio de tarifa del abogado
+   SELECT COALESCE(SUM(fd.Horas), 0), COALESCE(AVG(fd.Tarifa), 0)
+   INTO v_horas_trabajadas, v_tarifa
+   FROM factura_detalle fd
+   INNER JOIN facturas f ON fd.ID_factura = f.ID
+   INNER JOIN factura_caso fc ON f.ID = fc.ID_factura
+   WHERE fc.ID_caso = p_ID_caso;
+ 
+   ##calculoa el costo total de las horas trabajadas
+   SET v_costo_horas = v_horas_trabajadas * v_tarifa;
+ 
+   ## comparo lo facturado vs el costo y determino la rentabilidad
+   IF v_total_facturado = 0 THEN
+      SET v_rentabilidad = 'Sin datos';
+   ELSEIF v_total_facturado >= v_costo_horas * 1.3 THEN
+      SET v_rentabilidad = 'Alta';
+   ELSEIF v_total_facturado >= v_costo_horas THEN
+      SET v_rentabilidad = 'Media';
+   ELSE
+      SET v_rentabilidad = 'Baja';
+   END IF;
+ 
+   RETURN v_rentabilidad;
+END$$
+ 
+DELIMITER ;
+ 
+## calculo la rentabilidad del caso 2
+SELECT FN_CalcularRentabilidadCaso(2) AS Rentabilidad;
+ 
+##reviso la rentabilidad de todos los casos
+SELECT
+    c.ID,
+    c.Titulo,
+    ec.Estado,
+    FN_CalcularRentabilidadCaso(c.ID) AS Rentabilidad
+FROM casos c
+INNER JOIN estados_caso ec ON c.ID_estado = ec.ID;
+ 
+ 
+-- ============================================================
+--		 5. FN_EstimarDuracionProceso
+-- ============================================================
+ 
+DELIMITER $$
+ 
+CREATE FUNCTION FN_EstimarDuracionProceso(
+   p_ID_caso INT
+)
+RETURNS INT
+READS SQL DATA
+BEGIN
+   DECLARE v_tipo_caso VARCHAR(20);
+   DECLARE v_rama VARCHAR(20);
+   DECLARE v_total_actuaciones INT;
+   DECLARE v_duracion_estimada INT;
+ 
+  ## obtengo el tipo de caso y la rama del derecho
+   SELECT tc.Tipo_caso, rd.Rama_derecho
+   INTO v_tipo_caso, v_rama
+   FROM casos c
+   INNER JOIN tipos_caso tc ON c.ID_tipo_caso = tc.ID
+   INNER JOIN ramas_derecho rd ON c.ID_rama_derecho = rd.ID
+   WHERE c.ID = p_ID_caso;
+   
+ ## cuento las actuaciones que ya tiene el caso
+   SELECT COUNT(*) INTO v_total_actuaciones
+   FROM actuaciones
+   WHERE ID_caso = p_ID_caso;
+ 
+  ## pongo una duración base según el tipo de caso
+   IF v_tipo_caso = 'Contencioso' THEN
+      SET v_duracion_estimada = 365;
+   ELSEIF v_tipo_caso = 'Consultivo' THEN
+      SET v_duracion_estimada = 90;
+   ELSE
+      SET v_duracion_estimada = 180;
+   END IF;
+ 
+   ##ajusto la duración según la rama del derecho
+   IF v_rama = 'Penal' THEN
+      SET v_duracion_estimada = v_duracion_estimada + 180;
+   ELSEIF v_rama = 'Laboral' THEN
+      SET v_duracion_estimada = v_duracion_estimada + 90;
+   END IF;
+ 
+   ## sumo 15 días por cada actuación registrada en el caso
+   SET v_duracion_estimada = v_duracion_estimada + (v_total_actuaciones * 15);
+ 
+   RETURN v_duracion_estimada;
+END$$
+ 
+DELIMITER ;
+ 
+-- esstima la duración del caso 2
+SELECT FN_EstimarDuracionProceso(2) AS Duracion_estimada_dias;
+ 
+-- la duración estimada de todos los casos con su fecha de cierre proyectada
+SELECT
+    c.ID,
+    c.Titulo,
+    tc.Tipo_caso,
+    rd.Rama_derecho,
+    c.Fecha_apertura,
+    FN_EstimarDuracionProceso(c.ID) AS Duracion_estimada_dias,
+    DATE_ADD(c.Fecha_apertura, INTERVAL FN_EstimarDuracionProceso(c.ID) DAY) AS Fecha_estimada_cierre
+FROM casos c
+INNER JOIN tipos_caso tc ON c.ID_tipo_caso = tc.ID
+INNER JOIN ramas_derecho rd ON c.ID_rama_derecho = rd.ID;
+ 
+## todos los triggers creados
+SHOW TRIGGERS FROM Lawfirm;
+ 
+## todas las funciones creadas
+SHOW FUNCTION STATUS WHERE Db = 'Lawfirm';
