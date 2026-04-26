@@ -1,0 +1,3 @@
+Descripción General del Proyecto
+
+LawFirm es una base de datos en MariaDB/MySQL que centraliza la gestión de un bufete de abogados: clientes, casos legales, actuaciones procesales, audiencias, documentos, facturación y una biblioteca jurídica con precedentes y base de conocimiento
