@@ -1,0 +1,82 @@
+ESTRUCTURA DE LOS MÓDULOS IMPLEMENTADOS
+
+Módulo 1 — Tablas de Catálogo
+
+tipos_cliente: Persona Natural, Empresa
+sectores_actividad: Tecnología, Construcción, Salud
+especialidades: Civil, Penal, Laboral, Tributario, Mercantil
+tipos_caso: Contencioso, Consultivo
+ramas_derecho: Civil, Penal, Laboral
+estados_caso: Activo, Cerrado, En espera, Ganado, Perdido, Conciliado
+tipos_actuacion: Audiencia, Diligencia, Notificacion, Recurso, Alegato
+tipos_documento: Contrato, Demanda, Recurso, Informe, Dictamen
+estados_documento: Borrador, Revisión, Final
+tipos_audiencia: Inicial, Pruebas, Alegatos, Sentencia
+estados_pago: Pendiente, Pagado, Vencido
+tipos_material: Libro, Revista, Artículo
+formatos_material: Físico, Digital
+
+Módulo 2 — Tablas Principales
+Entidades centrales del sistema:
+
+clientes: datos, contacto, clasificación y sector del cliente
+abogados: colegiatura, especialidad, experiencia y tarifa por hora
+casos: título, tipo, rama, juzgado, expediente y estado
+actuaciones: actuaciones procesales vinculadas a un caso
+documentos: documentos legales con versión y confidencialidad
+audiencias: audiencias programadas con propósito y resultado
+facturas: facturación por cliente con subtotal, impuestos y total
+precedentes: jurisprudencia de referencia
+materiales_biblioteca: libros y recursos jurídicos del bufete
+conocimientos: base de conocimiento legal del bufete
+
+Módulo 3 — Tablas Intermedias
+Gestionan relaciones M:M y atributos multivaluados
+
+caso_abogado: abogados asignados a un caso (principal/secundario)
+participantes_audiencia: participantes internos y externos de audiencias
+factura_caso: casos incluidos en una factura
+factura_detalle: desglose de horas y tarifas por abogado
+actuacion_documento: documentos asociados a actuaciones
+destinatario_documento: destinatarios internos y externos de documentos
+idiomas_abogado: idiomas que domina cada abogado
+material_prestamo: historial de préstamos de la biblioteca
+conocimiento_experto: conocimientos asociados a abogados expertos
+conocimiento_documento: conocimientos respaldados por documentos
+conocimiento_precedente: conocimientos vinculados a precedentes judiciales
+
+Módulo 4 — Índices
+
+idx_casos_cliente: índice simple sobre casos(ID_cliente)
+idx_casos_estado: índice simple sobre casos(ID_estado)
+idx_casos_cliente_estado: índice compuesto sobre casos(ID_cliente, ID_estado)
+idx_fact_cliente_estado: índice compuesto sobre facturas(ID_cliente, ID_estado)
+idx_u_caso_abogado: índice único sobre caso_abogado(ID_caso, ID_abogado)
+idx_u_factura_caso: índice único sobre factura_caso(ID_factura, ID_caso)
+
+Módulo 5— Tablas de soporte o auxiliares
+ 
+- AgendaAbogados: guarda las actuaciones programadas por abogado
+- HistorialHonorarios: registra cada honorario calculado automáticamente
+- ConflictosInteres: almacena los conflictos de interés detectados
+- EstadisticasCasos: acumula estadísticas de casos ganados y perdidos por abogado
+- HistorialActividades: lleva el registro de toda actividad de un caso
+ 
+ 
+Módulo 6 — Triggers
+ 
+- TR_ActualizarAgendaAbogados: al insertar una actuación, la agrega a la agenda del abogado principal (AFTER INSERT en actuaciones)
+- TR_CalcularHonorariosAbogados: al insertar un detalle de factura, calcula y guarda el honorario automáticamente (AFTER INSERT en factura_detalle)
+- TR_VerificarConflictosIntereses: al asignar un abogado a un caso, revisa si ya representa a la contraparte (AFTER INSERT en caso_abogado)
+- TR_ActualizarEstadisticasCasos: al cambiar el estado de un caso, actualiza los contadores de ganados y perdidos (AFTER UPDATE en casos)
+- TR_RegistrarHistorialActividades: al insertar una actuación o documento, deja un registro en el historial del caso (AFTER INSERT en actuaciones y documentos)
+ 
+ 
+Módulo 7 — Functions
+
+- FN_CalcularHonorariosEstimados: recibe el ID del caso y las horas estimadas, retorna el honorario en DECIMAL
+- FN_VerificarDisponibilidadAbogado: recibe el ID del abogado y una fecha, retorna Disponible, Parcial o No disponible
+- FN_ObtenerPrecedentesLegalesSimilares: recibe el ID del caso, retorna la cantidad de precedentes similares en INT
+- FN_CalcularRentabilidadCaso: recibe el ID del caso, retorna Alta, Media, Baja o Sin datos
+- FN_EstimarDuracionProceso: recibe el ID del caso, retorna los días estimados de duración en INT
+ 
