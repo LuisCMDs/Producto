@@ -1,0 +1,32 @@
+Intrucciones de Uso
+Requisitos
+
+MariaDB 10.x o MySQL 8.x
+Cliente SQL: HeidiSQL, MySQL Workbench o DBeaver
+
+Paso 1 — Ejecutar el script principal
+Copiar y ejecutar el script de la sección README.MD "DATABASE LAWFIRM". Crea la base de datos, todas las tablas, índices y datos de prueba
+
+Paso 2- Antes de ejecutar los triggers y functions
+Copiar y ejecutar los cinco CREATE TABLE IF NOT EXISTS al inicio del script antes de crear cualquier trigger o function
+
+Paso 3 — Ejecutar los trigger
+Copiar y ejecutar cada trigger por separado desde DELIMITER $$ hasta DELIMITER ;.
+
+En HeidiSQL: seleccionar el bloque completo y presionar la tecla F9
+
+Paso 4 — Ejecutar las functions
+Copiar y ejecutar cada función por separado desde DELIMITER $$ hasta DELIMITER ;, igual que los triggers
+
+Paso 5 — Probar
+## probar un trigger insertando una actuación
+INSERT INTO actuaciones (ID_caso, ID_tipo_actuacion, Fecha, Lugar, Descripcion, Siguiente_paso, Fecha_limite)
+VALUES (2, 1, '2025-07-15 09:00:00', 'Juzgado Laboral', 'Audiencia de alegatos', 'Preparar cierre', '2025-07-20');
+
+## ver que la agenda se actualizó sola
+SELECT * FROM AgendaAbogados;
+
+## probar una función
+SELECT FN_CalcularHonorariosEstimados(2, 10) AS HonorariosEstimados;
+SELECT FN_VerificarDisponibilidadAbogado(1, '2025-07-15') AS Disponibilidad;
+SELECT FN_EstimarDuracionProceso(2) AS Duracion_dias;
